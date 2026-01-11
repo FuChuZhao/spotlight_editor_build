@@ -7,8 +7,6 @@ on:
         description: "Source repo ref (branch/tag/SHA)"
         required: false
         default: "main"
-  schedule:
-    - cron: "0 3 * * *"
 
 jobs:
   build:
@@ -104,3 +102,4 @@ jobs:
         with:
           name: app-release.apk
           path: src/build_ci/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 1
