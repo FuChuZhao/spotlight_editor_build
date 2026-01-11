@@ -1,0 +1,106 @@
+name: Android APK (Release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Source repo ref (branch/tag/SHA)"
+        required: false
+        default: "main"
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SOURCE_REPO_SSH_KEY }}
+
+      - name: Add github.com to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Clone private source repo
+        env:
+          SOURCE_REF: ${{ github.event.inputs.ref || 'main' }}
+        run: |
+          set -e
+          git clone --depth 1 --branch "$SOURCE_REF" git@github.com:FuChuZhao/spotlight_editor.git src
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Stabilize APK signature across CI runs when using the default debug keystore.
+      # The source repo also includes a fallback upload keystore for internal/testing use.
+      - name: Cache Android debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Create build project (android)
+        working-directory: src
+        run: |
+          set -e
+          rm -rf build_ci
+          flutter create build_ci \
+            --platforms=android \
+            --org com.myteam.spotlight_editor \
+            --project-name spotlight_editor
+
+          # Copy sources over the generated template
+          rsync -a --delete ./lib ./pubspec.yaml ./analysis_options.yaml ./tool ./README.md ./LICENSE build_ci/
+
+          # Remove template tests (they reference template widgets like `MyApp`)
+          rm -rf build_ci/test
+
+          # Patch Android permissions required by photo_manager
+          (cd build_ci && bash tool/patch_android_manifest.sh .)
+
+      - name: Configure signing (optional)
+        working-directory: src/build_ci
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: bash tool/patch_android_signing.sh .
+
+      - name: Pub get
+        working-directory: src/build_ci
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: src/build_ci
+        run: flutter analyze
+
+      - name: Build APK
+        working-directory: src/build_ci
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.apk
+          path: src/build_ci/build/app/outputs/flutter-apk/app-release.apk
